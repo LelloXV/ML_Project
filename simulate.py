@@ -28,11 +28,14 @@ def run_experiment(game, agent_class, agent_params, n_episodes, n_runs):
             agent2.update(a2, r2)
 
             # 2d. record time-averaged policy (fraction of times action 0 was chosen)
-            action0_counts[0] += (a1 == 0)
-            action0_counts[1] += (a2 == 0)
-            policy_p1 = action0_counts[0] / (episode + 1)
-            policy_p2 = action0_counts[1] / (episode + 1)
-            trajectory.append((policy_p1, policy_p2))
+            #action0_counts[0] += (a1 == 0)
+            #action0_counts[1] += (a2 == 0)
+            #policy_p1 = action0_counts[0] / (episode + 1)
+            #policy_p2 = action0_counts[1] / (episode + 1)
+            #trajectory.append((policy_p1, policy_p2))
+            policy_p1 = agent1.get_policy()
+            policy_p2 = agent2.get_policy()
+            trajectory.append(np.concatenate([policy_p1, policy_p2]))
 
         all_trajectories.append(trajectory)
 

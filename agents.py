@@ -4,7 +4,7 @@ class Agent:
     def __init__(self, n_actions, alpha):
         self.n_actions = n_actions
         self.alpha = alpha
-        self.Q = np.random.uniform(-0.1, 0.1, n_actions)
+        self.Q = np.random.uniform(-2, 2, n_actions)
 
     def select_action(self):
         raise NotImplementedError
@@ -29,7 +29,7 @@ class EpsilonGreedyAgent(Agent):
     def get_policy(self):
         probs = np.ones(self.n_actions) * self.epsilon / self.n_actions
         probs[np.argmax(self.Q)] += (1 - self.epsilon)
-        return probs[0]
+        return probs
 
 
 class BoltzmannAgent(Agent):
@@ -38,12 +38,18 @@ class BoltzmannAgent(Agent):
         self.tau = tau
 
     def select_action(self):
-        probs = np.exp(self.Q/self.tau)/np.sum(np.exp(self.Q/self.tau))
-        return np.random.choice(self.n_actions, p=probs) # selects action a_i with probability got from Boltzmann
+        #probs = np.exp(self.Q/self.tau)/np.sum(np.exp(self.Q/self.tau))
+        #return np.random.choice(self.n_actions, p=probs) # selects action a_i with probability got from Boltzmann
+        probs = self.get_policy()
+        return np.random.choice(self.n_actions, p=probs)
 
     def get_policy(self):
-        probs = np.exp(self.Q / self.tau) / np.sum(np.exp(self.Q / self.tau))
-        return probs[0]
+        #probs = np.exp(self.Q / self.tau) / np.sum(np.exp(self.Q / self.tau))
+        #return probs
+        z = self.Q / self.tau
+        z = z - np.max(z)  # log-sum-exp stabilisation
+        e = np.exp(z)
+        return e / np.sum(e)
 
 class LenientBoltzmannAgent(BoltzmannAgent):
     def __init__(self, n_actions, alpha, tau, kappa):
