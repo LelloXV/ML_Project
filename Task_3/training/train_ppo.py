@@ -2,8 +2,8 @@
 """
 PPO training for KAZ with:
     - parameter sharing (one policy for both archers)
-    - custom CNN-based RLModule (KAZPPOModule from Step 3)
-    - CPU-friendly defaults for Apple Silicon
+    - ground-truth zombie obs (no Faster R-CNN during training)
+    - CPU-friendly defaults
 
 Run modes:
     python -m training.train_ppo --smoke           # 3 iterations, verifies pipeline
@@ -37,9 +37,8 @@ from ray.tune.registry import register_env
 TASK3_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TASK3_DIR))
 
-from visual_utils import VisualWrapper, set_distortion_level  # noqa: E402
-from submission import CustomWrapper                           # noqa: E402
-from models.ppo_module import KAZPPOModule                    # noqa: E402
+from submission import CustomWrapper           # noqa: E402
+from models.ppo_module import KAZPPOModule    # noqa: E402
 
 
 SHARED_POLICY = "shared_policy"
@@ -49,47 +48,45 @@ ENV_ID = "kaz_shared"
 # ------------------------------------------------------------------ env factory
 
 def _env_factory(env_config: dict | None = None):
-    """Build the training env using raw_env() to avoid OrderEnforcingWrapper."""
+    """Build the training env — no pixel rendering or detector inference needed.
+
+    CustomWrapper(use_ground_truth=True) reads zombie rects directly from the
+    game's sprite list. This is ~1000x faster than running FasterRCNN per step,
+    produces the exact same 40-dim obs format as at submission time, and avoids
+    the previous bug where train_batch_size (in agent transitions) was smaller
+    than 2 * max_cycles, causing n_ep=0 and NaN losses.
+    """
     # Kaggle / any headless server: Pygame needs a dummy video driver.
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-    cfg           = env_config or {}
-    detector_path = cfg.get("detector_path", None)
-
-    # Must use raw_env() — env() wraps in OrderEnforcingWrapper which blocks
-    # attribute access to .screen, breaking VisualWrapper._refresh_transformed_frame.
+    # render_mode=None: no pixel frames needed (ground-truth obs bypass rendering).
     raw_kaz = knights_archers_zombies_v10.raw_env(
-        max_cycles=2500, num_archers=2, num_knights=0,
-        max_zombies=4, vector_state=False, render_mode="rgb_array",
+        max_cycles=900, num_archers=2, num_knights=0,
+        max_zombies=4, vector_state=False, render_mode=None,
     )
-    set_distortion_level(level=cfg.get("distortion_level", 0))
-    env = VisualWrapper(raw_kaz)
-    env.render_mode = None
-    env = CustomWrapper(env, detector_path=detector_path)
-    # RLlib's parallel API expects a parallel env, so convert AEC->parallel.
+    env = CustomWrapper(raw_kaz, use_ground_truth=True)
+    # RLlib's parallel API expects a parallel env — convert AEC→parallel.
     return ParallelPettingZooEnv(pettingzoo.utils.conversions.aec_to_parallel(env))
 
 
 # ------------------------------------------------------------------ PPO config
 
-# Task_3/training/train_ppo.py — replace the existing build_config with this
-def build_config(num_env_runners: int = 1,
-                 train_batch_size: int = 6000,
+def build_config(num_env_runners: int = 2,
+                 train_batch_size: int = 8000,
                  minibatch_size: int = 512,
                  num_epochs: int = 6,
-                 lr: float = 2.5e-4) -> PPOConfig:
+                 lr: float = 3e-4) -> PPOConfig:
     """
-    PPO hyperparameters. Auto-detects CUDA and routes the learner to GPU.
+    PPO hyperparameters for ground-truth-obs training (no detector in env runners).
 
-    train_batch_size=6000 guarantees at least one complete KAZ episode per
-    rollout (max_cycles=2500 × 2 agents = 5000 transitions).  The env runner
-    gets the GPU so the frozen FasterRCNN detector runs on CUDA (~0.05 s/step
-    instead of ~0.4 s on CPU), keeping each iteration to ~5 min on a T4.
-    The MLP policy/value updates are negligible on CPU.
+    With max_cycles=900 parallel steps per episode and 2 agents:
+      train_batch_size=8000 agent transitions = 4000 parallel steps → ~4 episodes
+      per iteration → n_ep > 0 from iteration 0.
+
+    Steps per iteration (est.): 8000 × ~0.5ms (raw KAZ step) ≈ 4 seconds.
+    Kaggle: 200 iterations ≈ 13 minutes with 2 runners.
     """
-    has_cuda = torch.cuda.is_available()
-
     return (
         PPOConfig()
         .api_stack(
@@ -101,14 +98,12 @@ def build_config(num_env_runners: int = 1,
             num_env_runners=num_env_runners,
             num_envs_per_env_runner=1,
             rollout_fragment_length="auto",
-            # Detector (FasterRCNN) runs inside the env runner subprocess.
-            # Give it the GPU; MLP gradient updates on CPU are negligible.
-            num_gpus_per_env_runner=1 if has_cuda else 0,
+            num_gpus_per_env_runner=0,  # No FasterRCNN — env runners are CPU-only
         )
         .framework("torch")
         .learners(
             num_learners=0,          # learner in driver process
-            num_gpus_per_learner=0,  # GPU is used by env runner
+            num_gpus_per_learner=0,  # MLP is tiny; CPU gradient updates are fine
         )
         .multi_agent(
             policies={SHARED_POLICY},
@@ -159,20 +154,19 @@ def train(iters: int = 200,
     register_env(ENV_ID, _env_factory)
 
     if smoke:
-        cfg = build_config(num_env_runners=0,            # all in driver process
-                           train_batch_size=256,
-                           minibatch_size=64,
+        cfg = build_config(num_env_runners=0,
+                           train_batch_size=512,
+                           minibatch_size=128,
                            num_epochs=2)
         iters = 3
         checkpoint_every = 999
     else:
-        runners = num_env_runners if num_env_runners is not None else 3
+        runners = num_env_runners if num_env_runners is not None else 2
         cfg = build_config(num_env_runners=runners)
 
     print("Building algorithm...", flush=True)
     algo = cfg.build()
     print("Algorithm built. Starting training.\n", flush=True)
-
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     last_checkpoint: Path | None = None
 
@@ -186,13 +180,12 @@ def train(iters: int = 200,
         if agent_returns:
             mean_return = float(np.mean(list(agent_returns.values())))
         else:
-            # Newer RLlib API stack may only populate the aggregate key
             mean_return = runners.get("episode_return_mean", float("nan"))
 
         ep_len = runners.get("episode_len_mean", float("nan"))
         n_ep   = runners.get("num_episodes", 0)
 
-        # Loss metrics — available even when no episode has completed yet.
+        # Loss metrics.
         learners = result.get("learners", {})
         pol_stats = learners.get(SHARED_POLICY, {})
         if not pol_stats:
@@ -249,7 +242,7 @@ def main():
     parser.add_argument("--checkpoint-dir", type=str, default=None,
                         help="Where to save checkpoints (default: <task3_dir>/results)")
     parser.add_argument("--num-env-runners", type=int, default=None,
-                        help="Number of parallel env runners (default: 3, use 1 on Kaggle)")
+                        help="Number of parallel env runners (default: 2)")
     args = parser.parse_args()
 
     ckpt_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else TASK3_DIR / "results"
