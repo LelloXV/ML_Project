@@ -24,18 +24,16 @@ nash_equilibria = {
 }
 
 for game in games:
-    # 1. Plot the Analytical Directional Field (Only for 2-action games)
-    if game.n_actions_p1 == 2:
-        # Note: adjust 'game.payoff_p1' if your attribute names in games.py are different
-        plot_directional_field(
-            game_name=game.name,
-            payoffs_P1=game.payoffs_p1,
-            payoffs_P2=game.payoffs_p2,
-            nash_equilibria=nash_equilibria[game.name]
-        )
+    # 1. Plot the Analytical Directional Field
+    plot_directional_field(
+        game_name=game.name,
+        payoffs_P1=game.payoffs_p1,
+        payoffs_P2=game.payoffs_p2,
+        nash_equilibria=nash_equilibria[game.name]
+    )
 
     # 2. Run Experiments and Plot Empirical Trajectories
     for agent_class, agent_params, agent_name in algorithms:
         print(f"Running {game.name} with {agent_name}...") # helpful for tracking progress
-        trajectories = run_experiment(game, agent_class, agent_params, n_episodes=10000, n_runs=20)
+        trajectories = run_experiment(game, agent_class, agent_params, n_episodes=10000, n_runs=10)
         plot_trajectories(trajectories, game, agent_name, nash_equilibria[game.name])
