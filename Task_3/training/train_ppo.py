@@ -169,6 +169,7 @@ def train(iters: int = 200,
     print("Algorithm built. Starting training.\n", flush=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     last_checkpoint: Path | None = None
+    best_return: float = float("-inf")
 
     for i in range(iters):
         result = algo.train()
@@ -201,6 +202,15 @@ def train(iters: int = 200,
               f"| p_loss={p_loss:.4f} | v_loss={v_loss:.4f} | ent={ent:.3f} | per_agent={per_agent}",
               flush=True)
 
+        # Save best policy whenever return improves — always to checkpoints/
+        # so submission.py picks it up without a manual copy step.
+        if not np.isnan(mean_return) and mean_return > best_return:
+            best_return = mean_return
+            policy_path = TASK3_DIR / "checkpoints" / "policy_best.pt"
+            module = algo.get_module(SHARED_POLICY)
+            torch.save(module.export_policy().state_dict(), str(policy_path))
+            print(f"           new best ({best_return:.3f}) → {policy_path}", flush=True)
+
         # Checkpoint
         if (i + 1) % checkpoint_every == 0:
             save_result = algo.save(str(checkpoint_dir))
@@ -217,11 +227,8 @@ def train(iters: int = 200,
     last_checkpoint = Path(save_result.checkpoint.path)
     print(f"\nFinal checkpoint: {last_checkpoint}", flush=True)
 
-    # Export pure-PyTorch policy so submission.py can load it without RLlib.
-    policy_path = checkpoint_dir / "policy_best.pt"
-    module = algo.get_module(SHARED_POLICY)
-    torch.save(module.export_policy().state_dict(), str(policy_path))
-    print(f"Policy weights  : {policy_path}", flush=True)
+    print(f"Best return seen: {best_return:.3f}", flush=True)
+    print(f"Policy weights  : {checkpoint_dir / 'policy_best.pt'}", flush=True)
 
     algo.stop()
     return last_checkpoint

@@ -23,8 +23,8 @@ import torch.nn as nn
 from ray.rllib.core.rl_module.torch import TorchRLModule
 from ray.rllib.core.rl_module.apis import ValueFunctionAPI
 
-OBS_DIM = 40   # 8 zombies × 5 features
-N_HIDDEN = 64
+OBS_DIM = 44   # 8 zombies × 5 features + sin(angle) + cos(angle) + archer cx + archer cy
+N_HIDDEN = 128
 
 
 # ── standalone policy (no RLlib) ──────────────────────────────────────────────
