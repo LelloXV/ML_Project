@@ -4,7 +4,7 @@ Two classes for the archer policy:
 
   ArcherPolicy   – pure nn.Module, no RLlib dependency.
                    Used for inference in submission.py and on dept computers.
-                   Saved/loaded with torch.save/load.
+                Saved/loaded with torch.save/load.
 
   KAZPPOModule   – TorchRLModule wrapping ArcherPolicy for RLlib PPO training.
                    Identical trunk + pi_head weights; adds a value head for PPO.
@@ -20,8 +20,15 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from ray.rllib.core.rl_module.torch import TorchRLModule
-from ray.rllib.core.rl_module.apis import ValueFunctionAPI
+
+try:
+    from ray.rllib.core.rl_module.torch import TorchRLModule
+    from ray.rllib.core.rl_module.apis import ValueFunctionAPI
+    _RLLIB = True
+except ImportError:
+    TorchRLModule = object   # type: ignore[misc,assignment]
+    ValueFunctionAPI = object  # type: ignore[misc,assignment]
+    _RLLIB = False
 
 OBS_DIM = 44   # 8 zombies × 5 features + sin(angle) + cos(angle) + archer cx + archer cy
 N_HIDDEN = 128

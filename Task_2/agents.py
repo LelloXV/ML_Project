@@ -4,7 +4,7 @@ class Agent:
     def __init__(self, n_actions, alpha):
         self.n_actions = n_actions
         self.alpha = alpha
-        self.Q = np.random.uniform(-2, 2, n_actions)
+        self.Q = np.random.uniform(-0.3, 0.3, n_actions)
 
     def select_action(self):
         raise NotImplementedError
@@ -36,6 +36,11 @@ class BoltzmannAgent(Agent):
     def __init__(self, n_actions, alpha, tau):
         super().__init__(n_actions, alpha)
         self.tau = tau
+        # Sample initial policy uniformly from the simplex (Dirichlet) and
+        # back-project to Q space: if pi = softmax(Q/tau) then Q = tau*log(pi).
+        # The additive constant cancels in softmax, so this is exact.
+        pi0 = np.random.dirichlet(np.ones(n_actions))
+        self.Q = tau * np.log(pi0)
 
     def select_action(self):
         #probs = np.exp(self.Q/self.tau)/np.sum(np.exp(self.Q/self.tau))

@@ -65,6 +65,43 @@ def build_detector(
     return model
 
 
+def save_heads_fp16(model: torch.nn.Module, path: str) -> None:
+    """Save only the fine-tuned heads (RPN + roi_heads) in FP16.
+
+    The frozen backbone is omitted — it is identical to torchvision's
+    pretrained COCO weights and will be re-downloaded at load time.
+    Saves ~32 MB vs ~165 MB for the full model.
+    """
+    state = {
+        "rpn":       {k: v.half() for k, v in model.rpn.state_dict().items()},
+        "roi_heads": {k: v.half() for k, v in model.roi_heads.state_dict().items()},
+    }
+    torch.save(state, path)
+
+
+def load_detector_heads(
+    path: str,
+    device: str = "cpu",
+    min_size: int = 480,
+    max_size: int = 640,
+) -> torch.nn.Module:
+    """Load a heads-only FP16 checkpoint produced by save_heads_fp16().
+
+    Builds a fresh model (downloads backbone from torchvision cache if needed),
+    then overwrites RPN and roi_heads with the fine-tuned weights.
+    """
+    model = build_detector(frozen_backbone=True, min_size=min_size, max_size=max_size)
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    model.rpn.load_state_dict(
+        {k: v.float() for k, v in ckpt["rpn"].items()}
+    )
+    model.roi_heads.load_state_dict(
+        {k: v.float() for k, v in ckpt["roi_heads"].items()}
+    )
+    model.eval().to(device)
+    return model
+
+
 @torch.no_grad()
 def predict(
     model: torch.nn.Module,

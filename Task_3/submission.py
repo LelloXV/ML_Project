@@ -49,16 +49,17 @@ _IMG_H = 720.0
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _get_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def _load_detector(device: str):
-    from models.detector import build_detector
-    path = os.path.join(_HERE, "checkpoints", "detector_best.pt")
-    model = build_detector(frozen_backbone=True)
-    model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
-    model.eval().to(device)
-    return model
+    from models.detector import load_detector_heads
+    path = os.path.join(_HERE, "checkpoints", "detector_heads_fp16.pt")
+    return load_detector_heads(path, device=device)
 
 
 def _boxes_to_vector(boxes_ltwh: np.ndarray, img_h: int, img_w: int) -> np.ndarray:
@@ -103,13 +104,9 @@ class CustomWrapper(BaseWrapper):
         self._use_ground_truth = use_ground_truth
 
         if not use_ground_truth:
-            det_path = detector_path or os.path.join(_HERE, "checkpoints", "detector_best.pt")
-            from models.detector import build_detector
-            self._detector = build_detector(frozen_backbone=True)
-            self._detector.load_state_dict(
-                torch.load(det_path, map_location=self._device, weights_only=True)
-            )
-            self._detector.eval().to(self._device)
+            det_path = detector_path or os.path.join(_HERE, "checkpoints", "detector_heads_fp16.pt")
+            from models.detector import load_detector_heads
+            self._detector = load_detector_heads(det_path, device=self._device)
         else:
             self._detector = None
 
@@ -198,7 +195,11 @@ class CustomWrapper(BaseWrapper):
 
     def observe(self, agent: AgentID) -> ObsType | None:
         # Cache hit: zombie vec is shared; archer state is per-agent so always recomputed.
-        if self._n_steps == self._det_step:
+        # Run detector once every 10 AEC steps (~5 game rounds) to stay within the
+        # 4-minute episode budget on CPU.  Zombie positions shift < 10 px in 5 rounds,
+        # negligible for the aiming policy.
+        _round = self._n_steps // 10
+        if _round == self._det_step:
             return np.concatenate([self._det_vec, self._archer_features(agent)])
 
         if self._use_ground_truth:
@@ -231,7 +232,7 @@ class CustomWrapper(BaseWrapper):
             boxes = predict(self._detector, frame, self._threshold, self._device)
             vec = _boxes_to_vector(boxes, h, w)
 
-        self._det_step = self._n_steps
+        self._det_step = _round
         self._det_vec  = vec
         return np.concatenate([self._det_vec, self._archer_features(agent)])
 
