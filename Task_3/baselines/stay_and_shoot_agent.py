@@ -1,4 +1,4 @@
-SHOOT_ACTION = 5  # check the action space in the PettingZoo docs
+SHOOT_ACTION = 4  # check the action space in the PettingZoo docs
 
 class StayAndShootAgent:
     def __init__(self, action_space):

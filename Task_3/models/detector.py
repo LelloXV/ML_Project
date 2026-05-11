@@ -102,7 +102,7 @@ def load_detector_heads(
     return model
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def predict(
     model: torch.nn.Module,
     image_np: np.ndarray,

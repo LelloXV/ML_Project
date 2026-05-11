@@ -25,8 +25,10 @@ from pettingzoo.utils.env import AgentID, ObsType
 # Ensure models/ is importable when this file is the entry point.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+os.environ["SDL_VIDEODRIVER"] = "dummy"
+os.environ["SDL_AUDIODRIVER"] = "dummy"
 
-
+torch.set_num_threads(4)
 # ── env settings ─────────────────────────────────────────────────────────────
 
 ENV_SETTINGS = {
@@ -194,47 +196,69 @@ class CustomWrapper(BaseWrapper):
         return spaces.Box(low=-1.0, high=1.0, shape=(_OBS_DIM + _ANGLE_DIM + _ARCHER_DIM,), dtype=np.float32)
 
     def observe(self, agent: AgentID) -> ObsType | None:
-        # Cache hit: zombie vec is shared; archer state is per-agent so always recomputed.
-        # Run detector once every 10 AEC steps (~5 game rounds) to stay within the
-        # 4-minute episode budget on CPU.  Zombie positions shift < 10 px in 5 rounds,
-        # negligible for the aiming policy.
-        _round = self._n_steps // 10
-        if _round == self._det_step:
-            return np.concatenate([self._det_vec, self._archer_features(agent)])
+        # This removes the 10-frame lag while still preventing the
+        # detector from running twice for the exact same frame.
+        _round = self._n_steps // 15
 
-        if self._use_ground_truth:
-            # Training fast path: read zombie positions directly from game state.
-            # Bypasses rendering and detector inference entirely.
+        if self._n_steps == 0 and agent == "archer_0":
             try:
-                raw = self.env.unwrapped          # KnightsArchersZombiesEnv
-                zombies = list(raw.zombie_list)
-                if zombies:
-                    boxes = np.array(
-                        [[z.rect.x, z.rect.y, z.rect.width, z.rect.height]
-                         for z in zombies],
-                        dtype=np.float32,
-                    )
-                else:
-                    boxes = np.zeros((0, 4), dtype=np.float32)
+                import os, time
+                # Save the log in the exact same folder as submission.py
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                log_file = os.path.join(current_dir, "tournament_survival_log.txt")
+
+                with open(log_file, "a") as f:
+                    f.write(f"Episode started at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.flush()  # Force Python to push data out of memory
+                    os.fsync(f.fileno())  # Force the Linux server to physically write to the disk
             except Exception:
-                boxes = np.zeros((0, 4), dtype=np.float32)
-            vec = _boxes_to_vector(boxes, 720, 1280)
-        else:
-            # Submission path: run detector on the VisualWrapper pixel frame.
-            frame = super().observe(agent)     # (H, W, 3) uint8 from VisualWrapper
-            if frame is None or not np.asarray(frame).any():
-                return np.zeros(_OBS_DIM + _ANGLE_DIM + _ARCHER_DIM, dtype=np.float32)
+                # If the logger fails for any reason, ignore it.
+                # Never let the tracker crash the actual tournament!
+                pass
 
-            frame = np.asarray(frame, dtype=np.uint8)
-            h, w  = frame.shape[:2]
+        if _round != self._det_step:
+            if self._use_ground_truth:
+                try:
+                    raw = self.env.unwrapped
+                    zombies = list(raw.zombie_list)
+                    if zombies:
+                        boxes = np.array(
+                            [[z.rect.x, z.rect.y, z.rect.width, z.rect.height] for z in zombies],
+                            dtype=np.float32,
+                        )
+                    else:
+                        boxes = np.zeros((0, 4), dtype=np.float32)
+                except Exception:
+                    boxes = np.zeros((0, 4), dtype=np.float32)
+                self._det_vec = _boxes_to_vector(boxes, 720, 1280)
+            else:
+                frame = super().observe(agent)
+                if frame is None or not np.asarray(frame).any():
+                    self._det_vec = np.zeros(_OBS_DIM, dtype=np.float32)
+                else:
+                    frame = np.asarray(frame, dtype=np.uint8)
+                    h, w = frame.shape[:2]
+                    from models.detector import predict
+                    boxes = predict(self._detector, frame, self._threshold, self._device)
+                    self._det_vec = _boxes_to_vector(boxes, h, w)
 
-            from models.detector import predict
-            boxes = predict(self._detector, frame, self._threshold, self._device)
-            vec = _boxes_to_vector(boxes, h, w)
+            self._det_step = _round
 
-        self._det_step = _round
-        self._det_vec  = vec
-        return np.concatenate([self._det_vec, self._archer_features(agent)])
+        # BIAS FIX: Convert Absolute Zombie Coordinates to RELATIVE Coordinates
+        archer_feats = self._archer_features(agent)
+        my_cx = archer_feats[2]
+        my_cy = archer_feats[3]
+
+        # Copy the cached vector so we don't permanently alter the shared cache
+        obs_vec = self._det_vec.copy()
+
+        # obs_vec shape is (40,). Every 5 indices is [present, cx, cy, w, h]
+        for i in range(0, _OBS_DIM, 5):
+            if obs_vec[i] > 0.5:  # If a zombie is present in this slot
+                obs_vec[i + 1] -= my_cx  # Relative X distance
+                obs_vec[i + 2] -= my_cy  # Relative Y distance
+
+        return np.concatenate([obs_vec, archer_feats])
 
 
 # ── CustomPredictFunction ─────────────────────────────────────────────────────

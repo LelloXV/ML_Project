@@ -1,6 +1,6 @@
 """Heuristic: stay roughly in the centre, fire whenever an arrow is ready.
 Useful as a non-trivial floor — your trained agent must beat this."""
-SHOOT_ACTION = 5  # check the action space in the PettingZoo docs
+SHOOT_ACTION = 4  # check the action space in the PettingZoo docs
 
 class ShootDiagonalAgent:
     def __init__(self, action_space):

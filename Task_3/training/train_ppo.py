@@ -62,8 +62,8 @@ def _env_factory(env_config: dict | None = None):
 
     # render_mode=None: no pixel frames needed (ground-truth obs bypass rendering).
     raw_kaz = knights_archers_zombies_v10.raw_env(
-        max_cycles=900, num_archers=2, num_knights=0,
-        max_zombies=4, vector_state=False, render_mode=None,
+        max_cycles=2500, num_archers=2, num_knights=0,
+        max_zombies=8, vector_state=False, render_mode=None,
     )
     env = CustomWrapper(raw_kaz, use_ground_truth=True)
     # RLlib's parallel API expects a parallel env — convert AEC→parallel.
@@ -73,9 +73,9 @@ def _env_factory(env_config: dict | None = None):
 # ------------------------------------------------------------------ PPO config
 
 def build_config(num_env_runners: int = 2,
-                 train_batch_size: int = 8000,
-                 minibatch_size: int = 512,
-                 num_epochs: int = 6,
+                 train_batch_size: int = 10000,
+                 minibatch_size: int = 1000,
+                 num_epochs: int = 4,
                  lr: float = 3e-4) -> PPOConfig:
     """
     PPO hyperparameters for ground-truth-obs training (no detector in env runners).
