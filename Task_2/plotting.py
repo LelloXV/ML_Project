@@ -15,12 +15,15 @@ def plot_trajectories(all_trajectories, game, agent_name, nash_equilibria):
 
 def _plot_2action(all_trajectories, game, agent_name, nash_equilibria):
     fig, ax = plt.subplots(figsize=(7, 7))
-    run_colors = plt.cm.tab20(np.linspace(0, 1, len(all_trajectories)))
+    run_colors = plt.cm.tab20(np.linspace(0, 1, max(len(all_trajectories), 1)))
 
     for i, trajectory in enumerate(all_trajectories):
         p1 = trajectory[:, 0]
         p2 = trajectory[:, 2]
-        ax.plot(p1, p2, color=run_colors[i], alpha=0.6, linewidth=1.2, zorder=2)
+        # Subsample to avoid dense zigzag lines
+        step = max(1, len(p1) // 500)
+        p1_s, p2_s = p1[::step], p2[::step]
+        ax.plot(p1_s, p2_s, color=run_colors[i], alpha=0.6, linewidth=1.2, zorder=2)
         ax.scatter(p1[0], p2[0], color="green", s=40, zorder=4, alpha=0.8)
         ax.scatter(p1[-1], p2[-1], color="orange", marker="*", s=100, zorder=4, alpha=0.9)
 
@@ -91,7 +94,7 @@ def _plot_3action_ternary(all_trajectories, game, agent_name, nash_equilibria):
 
     triangle_x = [0, 1, 0.5, 0]
     triangle_y = [0, 0, np.sqrt(3) / 2, 0]
-    run_colors = plt.cm.tab20(np.linspace(0, 1, len(all_trajectories)))
+    run_colors = plt.cm.tab20(np.linspace(0, 1, max(len(all_trajectories), 1)))
 
     for ax, player_idx, title in zip(axes, [0, 1], ["Player 1", "Player 2"]):
         ax.plot(triangle_x, triangle_y, color='black', linewidth=1.5, zorder=1)
@@ -99,10 +102,15 @@ def _plot_3action_ternary(all_trajectories, game, agent_name, nash_equilibria):
         for i, trajectory in enumerate(all_trajectories):
             start_col = player_idx * 3
             p = trajectory[:, start_col:start_col + 3]
-            x, y = ternary_to_cartesian(p)
+            # Subsample to at most 200 points to avoid clutter
+            step = max(1, len(p) // 200)
+            p_s = p[::step]
+            x, y = ternary_to_cartesian(p_s)
+            x0, y0 = ternary_to_cartesian(p[:1])
+            xf, yf = ternary_to_cartesian(p[-1:])
             ax.plot(x, y, color=run_colors[i], alpha=0.6, linewidth=1.2, zorder=2)
-            ax.scatter(x[0], y[0], color="green", s=40, zorder=4, alpha=0.8)
-            ax.scatter(x[-1], y[-1], color="orange", marker="*", s=100, zorder=4, alpha=0.9)
+            ax.scatter(x0[0], y0[0], color="green", s=40, zorder=4, alpha=0.8)
+            ax.scatter(xf[0], yf[0], color="orange", marker="*", s=100, zorder=4, alpha=0.9)
 
         if nash_equilibria:
             for idx, ne in enumerate(nash_equilibria):
@@ -193,7 +201,8 @@ def _plot_2action_combined(game, agent_name, trajectories, nash_equilibria, tau,
 
     is_lenient = (agent_name == "Lenient Boltzmann")
     field_color = 'darkorange' if is_lenient else 'steelblue'
-    run_colors = (plt.cm.Oranges if is_lenient else plt.cm.Blues)(np.linspace(0.45, 0.9, len(trajectories)))
+    run_colors = (plt.cm.Oranges if is_lenient else plt.cm.Blues)(
+        np.linspace(0.45, 0.9, max(len(trajectories), 1)))
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
@@ -208,7 +217,9 @@ def _plot_2action_combined(game, agent_name, trajectories, nash_equilibria, tau,
               color=field_color, alpha=0.5, width=0.003, headwidth=4)
 
     for i, traj in enumerate(trajectories):
-        ax.plot(traj[:, 0], traj[:, 2], color=run_colors[i], alpha=0.8, linewidth=1.2, zorder=3)
+        step = max(1, len(traj) // 500)
+        traj_s = traj[::step]
+        ax.plot(traj_s[:, 0], traj_s[:, 2], color=run_colors[i], alpha=0.8, linewidth=1.2, zorder=3)
         ax.scatter(traj[0, 0], traj[0, 2], color='green', s=40, zorder=4, alpha=0.8)
         ax.scatter(traj[-1, 0], traj[-1, 2], color=run_colors[i], marker='*', s=100, zorder=5)
 
@@ -262,7 +273,8 @@ def _plot_3action_combined(game, agent_name, trajectories, nash_equilibria, tau,
                 dX_rep[i, j] = dp_rep[1] + 0.5 * dp_rep[2]
                 dY_rep[i, j] = (np.sqrt(3) / 2) * dp_rep[2]
 
-                E_ana = E_rep if agent_name == "Boltzmann" else compute_lenient_expected_rewards(game.payoffs_p1, p, kappa)
+                E_ana = E_rep if agent_name == "Boltzmann" else \
+                    compute_lenient_expected_rewards(game.payoffs_p1, p, kappa)
                 dp_ana = p * ((E_ana - p @ E_ana) / tau + ent_p - np.log(p))
                 dX_ana[i, j] = dp_ana[1] + 0.5 * dp_ana[2]
                 dY_ana[i, j] = (np.sqrt(3) / 2) * dp_ana[2]
@@ -275,7 +287,8 @@ def _plot_3action_combined(game, agent_name, trajectories, nash_equilibria, tau,
 
     is_lenient = (agent_name == "Lenient Boltzmann")
     field_color = 'darkorange' if is_lenient else 'steelblue'
-    run_colors = (plt.cm.Oranges if is_lenient else plt.cm.Blues)(np.linspace(0.45, 0.9, len(trajectories)))
+    run_colors = (plt.cm.Oranges if is_lenient else plt.cm.Blues)(
+        np.linspace(0.45, 0.9, max(len(trajectories), 1)))
 
     def ternary_to_cartesian(p_arr):
         return p_arr[:, 1] + 0.5 * p_arr[:, 2], (np.sqrt(3) / 2) * p_arr[:, 2]
@@ -293,10 +306,16 @@ def _plot_3action_combined(game, agent_name, trajectories, nash_equilibria, tau,
 
         start_col = player_idx * 3
         for i, traj in enumerate(trajectories):
-            x, y = ternary_to_cartesian(traj[:, start_col:start_col + 3])
+            p = traj[:, start_col:start_col + 3]
+            # Subsample to at most 200 points
+            step = max(1, len(p) // 200)
+            p_s = p[::step]
+            x, y = ternary_to_cartesian(p_s)
+            x0, y0 = ternary_to_cartesian(p[:1])
+            xf, yf = ternary_to_cartesian(p[-1:])
             ax.plot(x, y, color=run_colors[i], alpha=0.8, linewidth=1.2, zorder=3)
-            ax.scatter(x[0], y[0], color='green', s=40, zorder=4, alpha=0.8)
-            ax.scatter(x[-1], y[-1], color=run_colors[i], marker='*', s=100, zorder=5)
+            ax.scatter(x0[0], y0[0], color='green', s=40, zorder=4, alpha=0.8)
+            ax.scatter(xf[0], yf[0], color=run_colors[i], marker='*', s=100, zorder=5)
 
         if nash_equilibria:
             for idx, ne in enumerate(nash_equilibria):

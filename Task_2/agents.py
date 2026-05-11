@@ -64,7 +64,7 @@ class LenientBoltzmannAgent(BoltzmannAgent):
 
     def update(self, action, reward):
         self.reward_buffer[action].append(reward)
-        if len(self.reward_buffer[action]) >= self.kappa:
-            best_reward = np.max(self.reward_buffer[action])  # take the max of the buffer
-            self.Q[action] = self.Q[action] + self.alpha*(best_reward - self.Q[action]) # standard Q update using best_reward
-            self.reward_buffer[action] = []  # reset the buffer
+        if len(self.reward_buffer[action]) > self.kappa:
+            self.reward_buffer[action].pop(0)
+        best_reward = max(self.reward_buffer[action])
+        self.Q[action] += self.alpha * (best_reward - self.Q[action])

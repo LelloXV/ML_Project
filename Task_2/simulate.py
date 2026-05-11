@@ -11,7 +11,7 @@ def ema_filter(data, alpha=0.01):
         smoothed[t] = alpha * data[t] + (1 - alpha) * smoothed[t-1]
     return smoothed
 
-def run_experiment(game, agent_class, agent_params, n_episodes, n_runs, ema_alpha=0.001):
+def run_experiment(game, agent_class, agent_params, n_episodes, n_runs, ema_alpha=0.01):
     all_trajectories = []
 
     for run in range(n_runs):
