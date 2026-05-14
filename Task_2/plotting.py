@@ -1,347 +1,359 @@
-import matplotlib.pyplot as plt
-import matplotlib.lines as mlines
+"""
+plotting.py – Visualisation with legends and NE annotations.
+
+Every panel includes:
+  • Replicator-dynamics vector field (gray arrows)
+  • Learning trajectories with start ● and end ■ markers
+  • Pure Nash equilibria: large gold ★ + labelled callout
+  • Mixed Nash equilibrium: orange ◆ + labelled callout
+  • A legend explaining every element
+"""
+from __future__ import annotations
+from pathlib import Path
+
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+from matplotlib.lines import Line2D
+
+from config  import N_STEPS, ALPHA, TAU, DPI, STARTS_2ACTION, STARTS_3ACTION
+from dynamics import (
+    replicator_field_2action, replicator_field_simplex,
+    init_q_boltzmann, bary_to_cart, _V,
+)
+from games import Game
 
 
-def plot_trajectories(all_trajectories, game, agent_name, nash_equilibria):
-    n_actions = game.n_actions_p1
-    if n_actions == 2:
-        _plot_2action(all_trajectories, game, agent_name, nash_equilibria)
-    elif n_actions == 3:
-        _plot_3action_ternary(all_trajectories, game, agent_name, nash_equilibria)
+# ─────────────────────────────────────────────────────────────────────────────
+# Style constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+_QUIVER   = dict(color="gray", alpha=0.28, scale=25,
+                 headwidth=3, headlength=3, width=0.003)
+_NE_STAR  = dict(marker="*",  color="#FFD700", ms=20, zorder=12,
+                 markeredgecolor="#333", markeredgewidth=0.8)
+_MIXED_NE = dict(marker="D",  color="#FF8C00", ms=10, zorder=12,
+                 markeredgecolor="#333", markeredgewidth=0.8)
+_START    = dict(marker="o",  ms=5, zorder=6, markeredgewidth=0.4)
+_END      = dict(marker="s",  ms=5, zorder=6, markeredgewidth=0.4)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legend handles
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _lh_line(col, label):
+    return Line2D([0],[0], color=col, lw=1.5, label=label)
+
+def _lh_start(col):
+    return Line2D([0],[0], ls="none", marker="o", color=col,
+                  ms=6, markeredgewidth=0.4, label="Start ●")
+
+def _lh_end(col):
+    return Line2D([0],[0], ls="none", marker="s", color=col,
+                  ms=6, markeredgewidth=0.4, label="End ■")
+
+def _lh_ne():
+    return Line2D([0],[0], ls="none", marker="*", color="#FFD700",
+                  ms=14, markeredgecolor="#333", markeredgewidth=0.6,
+                  label="Nash Eq. ★")
+
+def _lh_mne():
+    return Line2D([0],[0], ls="none", marker="D", color="#FF8C00",
+                  ms=8, markeredgecolor="#333", markeredgewidth=0.6,
+                  label="Mixed Nash Eq. ◆")
+
+def _lh_field():
+    return Line2D([0],[0], color="gray", lw=1.5, alpha=0.5,
+                  label="Replicator field →")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NE helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ne_coords_2action(game: Game):
+    coords = []
+    for i, j in game.nash_pure():
+        x, y = 1.0 - i, 1.0 - j
+        coords.append((x, y, f"NE ({game.actions[i]},{game.actions[j]})", "pure"))
+    mne = game.mixed_nash_2x2()
+    if mne is not None:
+        p, q = mne
+        coords.append((p[0], q[0],
+                        f"Mixed NE ({p[0]:.2f},{q[0]:.2f})", "mixed"))
+    return coords
+
+
+def _ne_coord_rps():
+    """Mixed NE for Biased RPS: (R=10/16, P=5/16, S=1/16)."""
+    return bary_to_cart(np.array([10/16, 5/16, 1/16]))
+
+
+def _annotate_ne(ax, x, y, label, kind):
+    ax.plot(x, y, ls="none", **(_NE_STAR if kind == "pure" else _MIXED_NE))
+    dx = -0.14 if x > 0.5 else +0.14
+    dy = -0.12 if y > 0.5 else +0.12
+    ax.annotate(
+        label, xy=(x, y), xytext=(x + dx, y + dy),
+        fontsize=7.5, fontweight="bold", color="#333",
+        ha="center", va="center",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                  ec="#999", alpha=0.85, lw=0.7),
+        arrowprops=dict(arrowstyle="-|>", color="#555",
+                        lw=0.9, mutation_scale=10),
+        zorder=15,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Axes formatting
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fmt(ax):
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(0.25))
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(0.25))
+    ax.tick_params(labelsize=8)
+    ax.set_xlabel("$x_1$  (P₁ plays action 0)", fontsize=9)
+    ax.set_ylabel("$y_1$  (P₂ plays action 0)", fontsize=9)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q-batch builder + starts selector
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _starts(game: Game):
+    if game.custom_starts is not None:
+        return game.custom_starts
+    return STARTS_2ACTION if game.n_actions == 2 else STARTS_3ACTION
+
+
+def _alpha(game: Game) -> float:
+    return game.custom_alpha if game.custom_alpha is not None else ALPHA
+
+
+def _q_batch(starts, na):
+    q1s, q2s = [], []
+    for s in starts:
+        if na == 2:
+            x0, y0 = s
+            q1s.append(init_q_boltzmann([x0, 1-x0], TAU))
+            q2s.append(init_q_boltzmann([y0, 1-y0], TAU))
+        else:
+            p = np.array(s, dtype=float); p /= p.sum()
+            q1s.append(init_q_boltzmann(p, TAU))
+            q2s.append(init_q_boltzmann(p, TAU))
+    return np.array(q1s), np.array(q2s)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Simplex helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _draw_simplex(ax, labels):
+    tri = np.vstack([_V, _V[0]])
+    ax.plot(tri[:,0], tri[:,1], "k-", lw=1.5, zorder=5)
+    offs = [(-0.07,-0.05),(1.04,-0.05),(0.50, np.sqrt(3)/2+0.06)]
+    for (ox,oy), lab, h, v in zip(offs, labels,
+                                   ["right","left","center"],
+                                   ["top","top","bottom"]):
+        ax.text(ox, oy, lab, fontsize=10, ha=h, va=v, fontweight="bold")
+    ax.set_xlim(-0.15, 1.15)
+    ax.set_ylim(-0.14, np.sqrt(3)/2 + 0.20)
+    ax.set_aspect("equal"); ax.axis("off")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core drawing routines
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _draw_2action(ax, game, batch_fn, kwargs, n_steps, color, alpha_line, seed):
+    st = _starts(game)
+    al = _alpha(game)
+
+    X, Y, U, V = replicator_field_2action(game.A, game.B)
+    norm = np.hypot(U, V) + 1e-10
+    ax.quiver(X, Y, U/norm, V/norm, **_QUIVER)
+
+    Q1b, Q2b = _q_batch(st, 2)
+    traj = batch_fn(game.A, game.B, Q1b, Q2b,
+                    n_steps=n_steps, alpha=al, seed=seed, **kwargs)
+    step = max(1, n_steps // 300)
+    for i in range(len(st)):
+        xs = traj[::step, i, 0, 0]
+        ys = traj[::step, i, 1, 0]
+        ax.plot(xs, ys, "-", color=color, lw=1.0, alpha=alpha_line)
+        ax.plot(xs[0],  ys[0],  ls="none", color=color,
+                markeredgecolor=color, **_START)
+        ax.plot(xs[-1], ys[-1], ls="none", color=color,
+                markeredgecolor=color, **_END)
+
+    _fmt(ax)
+
+    has_mixed = False
+    for x, y, lbl, kind in _ne_coords_2action(game):
+        _annotate_ne(ax, x, y, lbl, kind)
+        if kind == "mixed":
+            has_mixed = True
+
+    handles = [_lh_field(), _lh_line(color, "Trajectory"),
+               _lh_start(color), _lh_end(color), _lh_ne()]
+    if has_mixed:
+        handles.append(_lh_mne())
+    ax.legend(handles=handles, fontsize=7.5, loc="best",
+              framealpha=0.88, edgecolor="#aaa")
+
+
+def _draw_simplex_panel(ax, game, batch_fn, kwargs, n_steps, color, alpha_line, seed):
+    st = _starts(game)
+    al = _alpha(game)
+
+    _draw_simplex(ax, game.actions)
+    Xc, Yc, Uc, Vc = replicator_field_simplex(game.A)
+    norm = np.hypot(Uc, Vc) + 1e-10
+    ax.quiver(Xc, Yc, Uc/norm, Vc/norm, **_QUIVER)
+
+    Q1b, Q2b = _q_batch(st, 3)
+    traj = batch_fn(game.A, game.B, Q1b, Q2b,
+                    n_steps=n_steps, alpha=al, seed=seed, **kwargs)
+    step = max(1, n_steps // 300)
+    for i in range(len(st)):
+        p1 = traj[::step, i, 0, :]
+        xy = bary_to_cart(p1)
+        ax.plot(xy[:,0], xy[:,1], "-", color=color, lw=1.0, alpha=alpha_line)
+        ax.plot(xy[0,0],  xy[0,1],  ls="none", color=color,
+                markeredgecolor=color, **_START)
+        ax.plot(xy[-1,0], xy[-1,1], ls="none", color=color,
+                markeredgecolor=color, **_END)
+
+    ne_xy = _ne_coord_rps()
+    ax.plot(ne_xy[0], ne_xy[1], ls="none", **_MIXED_NE)
+    ax.annotate(
+        "Mixed NE\n(R=0.63, P=0.31, S=0.06)",
+        xy=(ne_xy[0], ne_xy[1]),
+        xytext=(ne_xy[0]+0.22, ne_xy[1]-0.10),
+        fontsize=7, fontweight="bold", color="#333",
+        ha="center", va="center",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                  ec="#999", alpha=0.88, lw=0.7),
+        arrowprops=dict(arrowstyle="-|>", color="#555",
+                        lw=0.9, mutation_scale=10),
+        zorder=15,
+    )
+    handles = [_lh_field(), _lh_line(color, "Trajectory (P₁)"),
+               _lh_start(color), _lh_end(color), _lh_mne()]
+    ax.legend(handles=handles, fontsize=7.5, loc="lower right",
+              framealpha=0.88, edgecolor="#aaa")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_panel(
+    ax,
+    game:       Game,
+    batch_fn,
+    kwargs:     dict  | None = None,
+    n_steps:    int          = N_STEPS,
+    color:      str          = "#1a1a2e",
+    alpha_line: float        = 0.80,
+    seed:       int          = 42,
+) -> None:
+    kwargs = kwargs or {}
+    if game.n_actions == 2:
+        _draw_2action(ax, game, batch_fn, kwargs, n_steps, color, alpha_line, seed)
     else:
-        _plot_naction(all_trajectories, game, agent_name, n_actions, nash_equilibria)
+        _draw_simplex_panel(ax, game, batch_fn, kwargs, n_steps, color, alpha_line, seed)
 
 
-def _plot_2action(all_trajectories, game, agent_name, nash_equilibria):
-    fig, ax = plt.subplots(figsize=(7, 7))
-    run_colors = plt.cm.tab20(np.linspace(0, 1, max(len(all_trajectories), 1)))
+def plot_two_algos_panel(
+    ax,
+    game:    Game,
+    fn1,     kw1: dict,
+    fn2,     kw2: dict,
+    label1:  str,
+    label2:  str,
+    col1:    str   = "#1a6faf",
+    col2:    str   = "#c0392b",
+    n_steps: int   = N_STEPS,
+    seed:    int   = 42,
+) -> list:
+    st = _starts(game)
+    na = game.n_actions
+    al = _alpha(game)
 
-    for i, trajectory in enumerate(all_trajectories):
-        p1 = trajectory[:, 0]
-        p2 = trajectory[:, 2]
-        # Subsample to avoid dense zigzag lines
-        step = max(1, len(p1) // 500)
-        p1_s, p2_s = p1[::step], p2[::step]
-        ax.plot(p1_s, p2_s, color=run_colors[i], alpha=0.6, linewidth=1.2, zorder=2)
-        ax.scatter(p1[0], p2[0], color="green", s=40, zorder=4, alpha=0.8)
-        ax.scatter(p1[-1], p2[-1], color="orange", marker="*", s=100, zorder=4, alpha=0.9)
-
-    for i, ne in enumerate(nash_equilibria):
-        ax.scatter(ne[0], ne[1], color="red", s=150, zorder=5, marker="X",
-                   label="Nash Eq." if i == 0 else None, edgecolors="black", linewidths=1.0)
-
-    handles, labels = ax.get_legend_handles_labels()
-    handles += [mlines.Line2D([], [], color='gray', alpha=0.6),
-                ax.scatter([], [], color="green", s=40),
-                ax.scatter([], [], color="orange", s=100, marker="*")]
-    labels += ['Trajectories', 'Start', 'End']
-
-    ax.set_xlim(-0.1, 1.1)
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_xlabel("P1: P(action 0)", fontsize=12)
-    ax.set_ylabel("P2: P(action 0)", fontsize=12)
-    ax.set_title(f"{game.name} — {agent_name}", fontsize=14, fontweight="bold", pad=20)
-    ax.legend(handles=handles, labels=labels, fontsize=10, loc='center left', bbox_to_anchor=(1.05, 0.5))
-    ax.set_aspect("equal")
-    ax.grid(True, linestyle="--", alpha=0.4)
-    plt.savefig(f"{game.name}_{agent_name.replace(' ', '_')}.png", dpi=150, bbox_inches='tight')
-    plt.close()
-
-
-def _plot_naction(all_trajectories, game, agent_name, n_actions, nash_equilibria=None):
-    action_labels_p1 = [f"P1: P(a{i})" for i in range(n_actions)]
-    action_labels_p2 = [f"P2: P(a{i})" for i in range(n_actions)]
-    colors = plt.cm.Set1(np.linspace(0, 1, n_actions))
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-    episodes = np.arange(all_trajectories.shape[1])
-
-    for run_idx, trajectory in enumerate(all_trajectories):
-        for a in range(n_actions):
-            axes[0].plot(episodes, trajectory[:, a], color=colors[a], alpha=0.25, linewidth=1.5,
-                         label=action_labels_p1[a] if run_idx == 0 else None)
-            axes[1].plot(episodes, trajectory[:, n_actions + a], color=colors[a], alpha=0.25, linewidth=1.5,
-                         label=action_labels_p2[a] if run_idx == 0 else None)
-
-    if nash_equilibria and len(nash_equilibria) > 0:
-        ne = nash_equilibria[0]
-        for a in range(n_actions):
-            axes[0].axhline(ne[a], color=colors[a], linestyle='--', alpha=0.9, linewidth=2)
-            axes[1].axhline(ne[a], color=colors[a], linestyle='--', alpha=0.9, linewidth=2)
-        nash_line = mlines.Line2D([], [], color='black', linestyle='--', label='Nash Eq. Target')
-        axes[1].legend(handles=axes[1].get_legend_handles_labels()[0] + [nash_line],
-                       fontsize=10, loc='center left', bbox_to_anchor=(1.05, 0.5))
+    if na == 2:
+        X, Y, U, V = replicator_field_2action(game.A, game.B)
+        norm = np.hypot(U, V) + 1e-10
+        ax.quiver(X, Y, U/norm, V/norm, **_QUIVER)
     else:
-        axes[1].legend(fontsize=10, loc='center left', bbox_to_anchor=(1.05, 0.5))
+        _draw_simplex(ax, game.actions)
+        Xc, Yc, Uc, Vc = replicator_field_simplex(game.A)
+        norm = np.hypot(Uc, Vc) + 1e-10
+        ax.quiver(Xc, Yc, Uc/norm, Vc/norm, **_QUIVER)
 
-    for ax, player in zip(axes, ["Player 1", "Player 2"]):
-        ax.set_xlabel("Episode", fontsize=12)
-        ax.set_ylabel("Policy probability", fontsize=12)
-        ax.set_title(f"{game.name} — {agent_name}\n{player}", fontsize=14, fontweight="bold", pad=20)
-        ax.set_ylim(-0.05, 1.05)
-        ax.grid(True, linestyle="--", alpha=0.4)
-
-    plt.savefig(f"{game.name}_{agent_name.replace(' ', '_')}.png", dpi=150, bbox_inches='tight')
-    plt.close()
-
-
-def _plot_3action_ternary(all_trajectories, game, agent_name, nash_equilibria):
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
-
-    def ternary_to_cartesian(p):
-        return p[:, 1] + 0.5 * p[:, 2], (np.sqrt(3) / 2) * p[:, 2]
-
-    triangle_x = [0, 1, 0.5, 0]
-    triangle_y = [0, 0, np.sqrt(3) / 2, 0]
-    run_colors = plt.cm.tab20(np.linspace(0, 1, max(len(all_trajectories), 1)))
-
-    for ax, player_idx, title in zip(axes, [0, 1], ["Player 1", "Player 2"]):
-        ax.plot(triangle_x, triangle_y, color='black', linewidth=1.5, zorder=1)
-
-        for i, trajectory in enumerate(all_trajectories):
-            start_col = player_idx * 3
-            p = trajectory[:, start_col:start_col + 3]
-            # Subsample to at most 200 points to avoid clutter
-            step = max(1, len(p) // 200)
-            p_s = p[::step]
-            x, y = ternary_to_cartesian(p_s)
-            x0, y0 = ternary_to_cartesian(p[:1])
-            xf, yf = ternary_to_cartesian(p[-1:])
-            ax.plot(x, y, color=run_colors[i], alpha=0.6, linewidth=1.2, zorder=2)
-            ax.scatter(x0[0], y0[0], color="green", s=40, zorder=4, alpha=0.8)
-            ax.scatter(xf[0], yf[0], color="orange", marker="*", s=100, zorder=4, alpha=0.9)
-
-        if nash_equilibria:
-            for idx, ne in enumerate(nash_equilibria):
-                ne_x, ne_y = ternary_to_cartesian(np.array([ne]))
-                ax.scatter(ne_x[0], ne_y[0], color="red", s=150, zorder=5, marker="X",
-                           label="Nash Eq." if idx == 0 else None, edgecolors="black", linewidths=1.0)
-
-        ax.text(-0.02, -0.05, "Action 0", fontsize=12, ha='right', va='top')
-        ax.text(1.02, -0.05, "Action 1", fontsize=12, ha='left', va='top')
-        ax.text(0.5, np.sqrt(3) / 2 + 0.05, "Action 2", fontsize=12, ha='center', va='bottom')
-
-        if player_idx == 1:
-            handles, labels = ax.get_legend_handles_labels()
-            handles += [mlines.Line2D([], [], color='gray', alpha=0.6),
-                        ax.scatter([], [], color="green", s=40),
-                        ax.scatter([], [], color="orange", s=100, marker="*")]
-            labels += ['Trajectories', 'Start', 'End']
-            ax.legend(handles=handles, labels=labels, fontsize=10, loc='center left', bbox_to_anchor=(1.05, 0.5))
-
-        ax.set_title(f"{game.name} — {agent_name}\n{title}", fontsize=14, fontweight="bold", pad=20)
-        ax.set_xlim(-0.2, 1.2)
-        ax.set_ylim(-0.1, np.sqrt(3) / 2 + 0.2)
-        ax.axis('off')
-        ax.set_aspect('equal')
-
-    plt.savefig(f"{game.name}_{agent_name.replace(' ', '_')}_ternary.png", dpi=150, bbox_inches='tight')
-    plt.close()
-
-
-def compute_lenient_expected_rewards(payoff_matrix, opp_policy, kappa):
-    n_actions_p1, n_actions_p2 = payoff_matrix.shape
-    expected_rewards = np.zeros(n_actions_p1)
-
-    for i in range(n_actions_p1):
-        rewards = payoff_matrix[i, :]
-        sort_idx = np.argsort(rewards)[::-1]
-        sorted_rewards = rewards[sort_idx]
-        sorted_probs = opp_policy[sort_idx]
-
-        F = np.zeros(n_actions_p2)
-        for k in range(n_actions_p2):
-            F[k] = np.sum(sorted_probs[k:])
-
-        F_kappa = F ** kappa
-        F_next_kappa = np.append(F_kappa[1:], 0.0)
-        prob_max_is_k = F_kappa - F_next_kappa
-        expected_rewards[i] = np.sum(sorted_rewards * prob_max_is_k)
-
-    return expected_rewards
-
-
-def plot_combined_field_and_trajectories(game, agent_name, trajectories, nash_equilibria, tau=0.3, kappa=5):
-    """Replicator dynamics field (gray) + analytical Boltzmann/Lenient field (colored) + trajectories."""
-    if game.n_actions_p1 == 2:
-        _plot_2action_combined(game, agent_name, trajectories, nash_equilibria, tau, kappa)
-    elif game.n_actions_p1 == 3:
-        _plot_3action_combined(game, agent_name, trajectories, nash_equilibria, tau, kappa)
-
-
-def _plot_2action_combined(game, agent_name, trajectories, nash_equilibria, tau, kappa):
-    grid = 25
-    x = np.linspace(0.01, 0.99, grid)
-    y = np.linspace(0.01, 0.99, grid)
-    X, Y = np.meshgrid(x, y)
-
-    dX_rep, dY_rep = np.zeros(X.shape), np.zeros(Y.shape)
-    dX_ana, dY_ana = np.zeros(X.shape), np.zeros(Y.shape)
-
-    for i in range(grid):
-        for j in range(grid):
-            pi_1 = np.array([X[i, j], 1 - X[i, j]])
-            pi_2 = np.array([Y[i, j], 1 - Y[i, j]])
-
-            E1 = game.payoffs_p1 @ pi_2
-            E2 = game.payoffs_p2.T @ pi_1
-            dX_rep[i, j] = pi_1[0] * (E1[0] - pi_1 @ E1)
-            dY_rep[i, j] = pi_2[0] * (E2[0] - pi_2 @ E2)
-
-            ent_1 = np.sum(pi_1 * np.log(pi_1))
-            ent_2 = np.sum(pi_2 * np.log(pi_2))
-            if agent_name == "Boltzmann":
-                E1_ana, E2_ana = E1, E2
+    algo_handles = []
+    for fn, kw, col, lab in [(fn1,kw1,col1,label1),(fn2,kw2,col2,label2)]:
+        Q1b, Q2b = _q_batch(st, na)
+        traj = fn(game.A, game.B, Q1b, Q2b,
+                  n_steps=n_steps, alpha=al, seed=seed, **kw)
+        step = max(1, n_steps // 300)
+        first = True
+        for i in range(len(st)):
+            if na == 2:
+                xs = traj[::step, i, 0, 0]
+                ys = traj[::step, i, 1, 0]
             else:
-                E1_ana = compute_lenient_expected_rewards(game.payoffs_p1, pi_2, kappa)
-                E2_ana = compute_lenient_expected_rewards(game.payoffs_p2.T, pi_1, kappa)
-            dX_ana[i, j] = pi_1[0] * ((E1_ana[0] - pi_1 @ E1_ana) / tau + ent_1 - np.log(pi_1[0]))
-            dY_ana[i, j] = pi_2[0] * ((E2_ana[0] - pi_2 @ E2_ana) / tau + ent_2 - np.log(pi_2[0]))
+                pts = bary_to_cart(traj[::step, i, 0, :])
+                xs, ys = pts[:,0], pts[:,1]
+            h, = ax.plot(xs, ys, "-", color=col, lw=1.0, alpha=0.80,
+                         label=lab if first else None)
+            ax.plot(xs[0],  ys[0],  ls="none", color=col,
+                    markeredgecolor=col, **_START)
+            ax.plot(xs[-1], ys[-1], ls="none", color=col,
+                    markeredgecolor=col, **_END)
+            if first:
+                algo_handles.append(h); first = False
 
-    is_lenient = (agent_name == "Lenient Boltzmann")
-    field_color = 'darkorange' if is_lenient else 'steelblue'
-    run_colors = (plt.cm.Oranges if is_lenient else plt.cm.Blues)(
-        np.linspace(0.45, 0.9, max(len(trajectories), 1)))
+    has_mixed = False
+    if na == 2:
+        _fmt(ax)
+        for x, y, lbl, kind in _ne_coords_2action(game):
+            _annotate_ne(ax, x, y, lbl, kind)
+            if kind == "mixed": has_mixed = True
+    else:
+        ne_xy = _ne_coord_rps()
+        ax.plot(ne_xy[0], ne_xy[1], ls="none", **_MIXED_NE)
+        ax.annotate(
+            "Mixed NE\n(R=0.63, P=0.31, S=0.06)",
+            xy=(ne_xy[0], ne_xy[1]), xytext=(ne_xy[0]+0.22, ne_xy[1]-0.10),
+            fontsize=7, fontweight="bold", color="#333",
+            ha="center", va="center",
+            bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                      ec="#999", alpha=0.88, lw=0.7),
+            arrowprops=dict(arrowstyle="-|>", color="#555",
+                            lw=0.9, mutation_scale=10),
+            zorder=15,
+        )
+        has_mixed = True
 
-    fig, ax = plt.subplots(figsize=(7, 7))
-
-    starts = []
-    for val in np.linspace(0.05, 0.95, 7):
-        starts.extend([[0.01, val], [val, 0.01], [0.99, val], [val, 0.99]])
-    ax.streamplot(X, Y, dX_rep, dY_rep, color='lightgray', linewidth=0.9, arrowstyle='->',
-                  start_points=np.array(starts), density=0.5)
-
-    skip = (slice(None, None, 2), slice(None, None, 2))
-    ax.quiver(X[skip], Y[skip], dX_ana[skip], dY_ana[skip],
-              color=field_color, alpha=0.5, width=0.003, headwidth=4)
-
-    for i, traj in enumerate(trajectories):
-        step = max(1, len(traj) // 500)
-        traj_s = traj[::step]
-        ax.plot(traj_s[:, 0], traj_s[:, 2], color=run_colors[i], alpha=0.8, linewidth=1.2, zorder=3)
-        ax.scatter(traj[0, 0], traj[0, 2], color='green', s=40, zorder=4, alpha=0.8)
-        ax.scatter(traj[-1, 0], traj[-1, 2], color=run_colors[i], marker='*', s=100, zorder=5)
-
-    for idx, ne in enumerate(nash_equilibria):
-        ax.scatter(ne[0], ne[1], color='red', s=150, zorder=6, marker='X',
-                   label='Nash Eq.' if idx == 0 else None, edgecolors='black', linewidths=1.0)
-
-    rep_line = mlines.Line2D([], [], color='lightgray', linewidth=1.5)
-    ana_line = mlines.Line2D([], [], color=field_color, alpha=0.8, linewidth=2)
-    traj_line = mlines.Line2D([], [], color=run_colors[len(trajectories) // 2], linewidth=1.5)
-    start_dot = ax.scatter([], [], color='green', s=40)
-    end_dot = ax.scatter([], [], color='gray', marker='*', s=100)
-    handles, labels = ax.get_legend_handles_labels()
-    handles = [rep_line, ana_line, traj_line, start_dot, end_dot] + handles
-    labels = ['Replicator Dynamics', f'Analytical {agent_name}', 'Trajectories', 'Start', 'End'] + labels
-    ax.legend(handles=handles, labels=labels, fontsize=9, loc='center left', bbox_to_anchor=(1.05, 0.5))
-
-    ax.set_xlim(-0.1, 1.1)
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_xlabel("P1: P(action 0)", fontsize=12)
-    ax.set_ylabel("P2: P(action 0)", fontsize=12)
-    ax.set_title(f"{game.name} — {agent_name}", fontsize=14, fontweight='bold', pad=20)
-    ax.set_aspect('equal')
-    ax.grid(True, linestyle='--', alpha=0.4)
-    plt.savefig(f"{game.name}_{agent_name.replace(' ', '_')}.png", dpi=150, bbox_inches='tight')
-    plt.close()
+    handles = [_lh_field(), _lh_line(col1, label1), _lh_line(col2, label2),
+               _lh_start("gray"), _lh_end("gray")]
+    if na == 2 and game.nash_pure():
+        handles.append(_lh_ne())
+    if has_mixed:
+        handles.append(_lh_mne())
+    ax.legend(handles=handles, fontsize=7.5,
+              loc="lower right" if na != 2 else "best",
+              framealpha=0.88, edgecolor="#aaa")
+    return algo_handles
 
 
-def _plot_3action_combined(game, agent_name, trajectories, nash_equilibria, tau, kappa):
-    grid = 40
-    X_vals = np.linspace(-0.05, 1.05, grid)
-    Y_vals = np.linspace(-0.05, np.sqrt(3) / 2 + 0.05, grid)
-    X, Y = np.meshgrid(X_vals, Y_vals)
-
-    dX_rep, dY_rep = np.zeros(X.shape), np.zeros(Y.shape)
-    dX_ana, dY_ana = np.zeros(X.shape), np.zeros(Y.shape)
-
-    for i in range(grid):
-        for j in range(grid):
-            xc, yc = X[i, j], Y[i, j]
-            p2_coord = yc / (np.sqrt(3) / 2)
-            p1_coord = xc - 0.5 * p2_coord
-            p0_coord = 1.0 - p1_coord - p2_coord
-            if p0_coord >= -0.01 and p1_coord >= -0.01 and p2_coord >= -0.01:
-                p = np.clip([p0_coord, p1_coord, p2_coord], 0.001, 1.0)
-                p = p / p.sum()
-                ent_p = np.sum(p * np.log(p))
-
-                E_rep = game.payoffs_p1 @ p
-                dp_rep = p * (E_rep - p @ E_rep)
-                dX_rep[i, j] = dp_rep[1] + 0.5 * dp_rep[2]
-                dY_rep[i, j] = (np.sqrt(3) / 2) * dp_rep[2]
-
-                E_ana = E_rep if agent_name == "Boltzmann" else \
-                    compute_lenient_expected_rewards(game.payoffs_p1, p, kappa)
-                dp_ana = p * ((E_ana - p @ E_ana) / tau + ent_p - np.log(p))
-                dX_ana[i, j] = dp_ana[1] + 0.5 * dp_ana[2]
-                dY_ana[i, j] = (np.sqrt(3) / 2) * dp_ana[2]
-
-    mask = (Y < 0) | (X < Y / np.sqrt(3)) | (X > 1 - Y / np.sqrt(3))
-    dX_rep = np.ma.masked_where(mask, dX_rep)
-    dY_rep = np.ma.masked_where(mask, dY_rep)
-    dX_ana = np.ma.masked_where(mask, dX_ana)
-    dY_ana = np.ma.masked_where(mask, dY_ana)
-
-    is_lenient = (agent_name == "Lenient Boltzmann")
-    field_color = 'darkorange' if is_lenient else 'steelblue'
-    run_colors = (plt.cm.Oranges if is_lenient else plt.cm.Blues)(
-        np.linspace(0.45, 0.9, max(len(trajectories), 1)))
-
-    def ternary_to_cartesian(p_arr):
-        return p_arr[:, 1] + 0.5 * p_arr[:, 2], (np.sqrt(3) / 2) * p_arr[:, 2]
-
-    triangle_x = [0, 1, 0.5, 0]
-    triangle_y = [0, 0, np.sqrt(3) / 2, 0]
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
-
-    for ax, player_idx, title in zip(axes, [0, 1], ["Player 1", "Player 2"]):
-        ax.plot(triangle_x, triangle_y, color='black', linewidth=1.5, zorder=1)
-        ax.streamplot(X, Y, dX_rep, dY_rep, color='lightgray', linewidth=0.9, density=1.2, arrowstyle='->')
-        skip = (slice(None, None, 2), slice(None, None, 2))
-        ax.quiver(X[skip], Y[skip], dX_ana[skip], dY_ana[skip],
-                  color=field_color, alpha=0.5, width=0.003, headwidth=4)
-
-        start_col = player_idx * 3
-        for i, traj in enumerate(trajectories):
-            p = traj[:, start_col:start_col + 3]
-            # Subsample to at most 200 points
-            step = max(1, len(p) // 200)
-            p_s = p[::step]
-            x, y = ternary_to_cartesian(p_s)
-            x0, y0 = ternary_to_cartesian(p[:1])
-            xf, yf = ternary_to_cartesian(p[-1:])
-            ax.plot(x, y, color=run_colors[i], alpha=0.8, linewidth=1.2, zorder=3)
-            ax.scatter(x0[0], y0[0], color='green', s=40, zorder=4, alpha=0.8)
-            ax.scatter(xf[0], yf[0], color=run_colors[i], marker='*', s=100, zorder=5)
-
-        if nash_equilibria:
-            for idx, ne in enumerate(nash_equilibria):
-                ne_x, ne_y = ternary_to_cartesian(np.array([ne]))
-                ax.scatter(ne_x[0], ne_y[0], color='red', s=150, zorder=6, marker='X',
-                           label='Nash Eq.' if idx == 0 else None, edgecolors='black', linewidths=1.0)
-
-        ax.text(-0.02, -0.05, "Action 0", fontsize=12, ha='right', va='top')
-        ax.text(1.02, -0.05, "Action 1", fontsize=12, ha='left', va='top')
-        ax.text(0.5, np.sqrt(3) / 2 + 0.05, "Action 2", fontsize=12, ha='center', va='bottom')
-        ax.set_title(f"{game.name} — {agent_name}\n{title}", fontsize=14, fontweight='bold', pad=20)
-        ax.set_xlim(-0.2, 1.2)
-        ax.set_ylim(-0.1, np.sqrt(3) / 2 + 0.25)
-        ax.axis('off')
-        ax.set_aspect('equal')
-
-        if player_idx == 1:
-            rep_line = mlines.Line2D([], [], color='lightgray', linewidth=1.5)
-            ana_line = mlines.Line2D([], [], color=field_color, alpha=0.8, linewidth=2)
-            traj_line = mlines.Line2D([], [], color=run_colors[len(trajectories) // 2], linewidth=1.5)
-            start_dot = ax.scatter([], [], color='green', s=40)
-            end_dot = ax.scatter([], [], color='gray', marker='*', s=100)
-            handles, labels = ax.get_legend_handles_labels()
-            handles = [rep_line, ana_line, traj_line, start_dot, end_dot] + handles
-            labels = ['Replicator Dynamics', f'Analytical {agent_name}', 'Trajectories', 'Start', 'End'] + labels
-            ax.legend(handles=handles, labels=labels, fontsize=9, loc='center left', bbox_to_anchor=(1.05, 0.5))
-
-    plt.savefig(f"{game.name}_{agent_name.replace(' ', '_')}_ternary.png", dpi=150, bbox_inches='tight')
-    plt.close()
+def save_fig(fig, path) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(p, dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved → {p.name}")
